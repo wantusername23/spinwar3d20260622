@@ -64,8 +64,17 @@ public class PlayerMovement : NetworkBehaviour
     private float speedChangeFactor;
     [SerializeField]
     private MovementState lastState;
-    [SerializeField]
-    private bool keepMomentum;
+
+
+    [Header("Spin Top Collision Filter")]
+    [SerializeField] private LayerMask targetLayers;     
+    [SerializeField] private string targetTag = "SpinTop";
+    [SerializeField] private bool useTagFilter = true;
+
+    [Header("Spin Top Collision")]
+    [SerializeField] private float bounceForceMultiplier = 1.5f; 
+    [SerializeField] private float minBounceSpeed = 10f;          
+    [SerializeField] private float knockbackDuration = 0.3f;
     private void StateHandler()
     {
         if (dashing)
@@ -101,11 +110,12 @@ public class PlayerMovement : NetworkBehaviour
         //    moveSpeed = desiredMoveSpeed;
         //}
 
-    
+
         lastDesiredMoveSpeed = desiredMoveSpeed;
-        
+
     }
-    
+    private float knockbackTimer = 0f;
+
     private IEnumerator SmoothlyLerpMoveSpeed()
     {
         float time = 0;
@@ -122,11 +132,12 @@ public class PlayerMovement : NetworkBehaviour
         }
         moveSpeed = desiredMoveSpeed;
         speedChangeFactor = 1f;
-        keepMomentum = false;
     }
 
     void Update()
     {
+        if (knockbackTimer > 0f)
+            knockbackTimer -= Time.deltaTime;
         grounded = Physics.Raycast(transform.position, Vector3.down, playerHeight * 0.5f + 0.5f, whatIsGround);
 
         StateHandler();
@@ -172,6 +183,7 @@ public class PlayerMovement : NetworkBehaviour
     // Update is called once per frame
     private void SpeedControl()
     {
+        if (knockbackTimer > 0f) return;
         // 수평 속도(X, Z)만 계산하여 중력(Y)에 영향을 주지 않도록 합니다.
         Vector3 flatVel = new Vector3(rb.linearVelocity.x, 0f, rb.linearVelocity.z);
 
@@ -185,6 +197,44 @@ public class PlayerMovement : NetworkBehaviour
             // 실제 리지드바디에 적용 (Y축 속도는 보존하여 중력 유지)
             rb.linearVelocity = new Vector3(limitedVel.x, rb.linearVelocity.y, limitedVel.z);
         }
+    }
+    private void OnCollisionEnter(Collision collision)
+    {
+        // 1. Rigidbody 유무 확인
+        if (collision.rigidbody == null) return;
+
+        GameObject hitObj = collision.gameObject;
+
+        // 2. 레이어 필터 검사 (비트마스크 연산)
+        bool isTargetLayer = (targetLayers.value & (1 << hitObj.layer)) != 0;
+        if (!isTargetLayer) return;
+
+        // 3. 태그 필터 검사 (옵션 활성화 시)
+        if (useTagFilter && !string.IsNullOrEmpty(targetTag))
+        {
+            if (!hitObj.CompareTag(targetTag)) return;
+        }
+
+        // 4. 반사각 계산 및 힘 적용
+        ContactPoint contact = collision.GetContact(0);
+        Vector3 normal = contact.normal;
+        normal.y = 0f;
+        normal.Normalize();
+
+        Vector3 myFlatVelocity = new Vector3(rb.linearVelocity.x, 0f, rb.linearVelocity.z);
+        Vector3 reflectDir = Vector3.Reflect(myFlatVelocity.normalized, normal).normalized;
+
+        if (reflectDir == Vector3.zero)
+            reflectDir = -normal;
+
+        float bounceSpeed = Mathf.Max(myFlatVelocity.magnitude * bounceForceMultiplier, minBounceSpeed);
+
+        // 기존 수평 속도를 초기화하고 충격량(Impulse) 적용
+        rb.linearVelocity = new Vector3(0f, rb.linearVelocity.y, 0f);
+        rb.AddForce(reflectDir * bounceSpeed, ForceMode.Impulse);
+
+        // 넉백 동안 제동 해제
+        knockbackTimer = knockbackDuration;
     }
     [ServerRpc]
     public void UpdateStateServerRpc(MovementState state)
